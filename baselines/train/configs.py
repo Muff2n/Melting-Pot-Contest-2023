@@ -1,5 +1,12 @@
+from random import choice
+import os
+
 from meltingpot import substrate
+from ray.air import CheckpointConfig, RunConfig
+from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.policy import policy
+from ray.tune import TuneConfig
+
 from baselines.train import make_envs
 
 SUPPORTED_SCENARIOS = [
@@ -27,147 +34,169 @@ SUPPORTED_SCENARIOS = [
 
 IGNORE_KEYS = ['WORLD.RGB', 'INTERACTION_INVENTORIES', 'NUM_OTHERS_WHO_CLEANED_THIS_STEP']
 
+NUM_POLICIES = 1
+NUM_ENVS_PER_WORKER = 1
+NUM_EPISODES_PER_WORKER = 1
 
-def get_experiment_config(args, default_config):
-    
+KEEP_CHECKPOINTS_NUM = 1  # Default None
+CHECKPOINT_FREQ = 20  # Default 0
+
+VERBOSE = 1
+
+SGD_MINIBATCH_SIZE = 2000  # 256 = minimum for efficient CPU training. increase if GPU
+LR = 1e-4  # 2e-4 for 4096
+VF_CLIP_PARAM = 2.0
+NUM_SGD_ITER = 10
+ENTROPY_COEFF = 0.003
+
+def get_experiment_config(args):
+
     if args.exp == 'pd_arena':
         substrate_name = "prisoners_dilemma_in_the_matrix__arena"
     elif args.exp == 'al_harvest':
         substrate_name = "allelopathic_harvest__open"
+        horizon = 2000
     elif args.exp == 'clean_up':
         substrate_name = "clean_up"
+        horizon = 1000 + 2/3 * (100 / 0.2)
     elif args.exp == 'territory_rooms':
         substrate_name = "territory__rooms"
     else:
         raise Exception("Please set --exp to be one of ['pd_arena', 'al_harvest', 'clean_up', \
                         'territory_rooms']. Other substrates are not supported.")
 
+    num_workers = args.num_cpus - 1
+
     # Fetch player roles
     player_roles = substrate.get_config(substrate_name).default_player_roles
+
+    train_batch_size = max(
+      1, num_workers) * NUM_ENVS_PER_WORKER * NUM_EPISODES_PER_WORKER * horizon * len(player_roles)
 
     if args.downsample:
         scale_factor = 8
     else:
         scale_factor = 1
 
-    params_dict = {
+    env_config = {"substrate": substrate_name,
+                  "roles": player_roles,
+                  "scaled": scale_factor}
 
-        # resources
-        "num_rollout_workers": args.num_workers,
-        "num_gpus": args.num_gpus,
+    base_env = make_envs.env_creator(env_config)
+    rgb_shape = base_env.observation_space["player_0"]["RGB"].shape
+    sprite_x = rgb_shape[0]
+    sprite_y = rgb_shape[1]
 
-        # Env
-        "env_name": "meltingpot",
-        "env_config": {"substrate": substrate_name, "roles": player_roles, "scaled": scale_factor},
+    # Each player needs to have the same
+    policies = {}
+    for i in range(NUM_POLICIES):
+        assert base_env.observation_space[f"player_0"] == base_env.observation_space[f"player_{i}"]
+        assert base_env.action_space[f"player_0"] == base_env.action_space[f"player_{i}"]
+        policies[f"policy_{i}"] = policy.PolicySpec(
+            # policy_class=None,  # use default policy
+            observation_space=base_env.observation_space[f"player_0"],
+            action_space=base_env.action_space[f"player_0"])
 
 
-        # training
-        "seed": args.seed,
-        "rollout_fragment_length": 10,
-        "train_batch_size": 400,
-        "sgd_minibatch_size": 32,
-        "disable_observation_precprocessing": True,
-        "use_new_rl_modules": False,
-        "use_new_learner_api": False,
-        "framework": args.framework,
-
-        # agent model
-        "fcnet_hidden": (4, 4),
-        "post_fcnet_hidden": (16,),
-        "cnn_activation": "relu",
-        "fcnet_activation": "relu",
+    CUSTOM_MODEL = {
+        "conv_filters": [[16, [3, 3], 1], [32, [3, 3], 1], [64, [sprite_x, sprite_y], 1]],
+        "conv_activation": "relu",
         "post_fcnet_activation": "relu",
+        "post_fcnet_hiddens": [64, 64],
+        "post_fcnet_activation": "relu",
+        "no_final_linear": True,
+        # needs vf_loss_coeff to be tuned if True
+        "vf_share_layers": True,
         "use_lstm": True,
+        "lstm_cell_size": 256,
         "lstm_use_prev_action": True,
         "lstm_use_prev_reward": False,
-        "lstm_cell_size": 2,
-        "shared_policy": False,
-
-        # experiment trials
-        "exp_name": args.exp,
-        "stopping": {
-                    #"timesteps_total": 1000000,
-                    "training_iteration": 1,
-                    #"episode_reward_mean": 100,
-        },
-        "num_checkpoints": 5,
-        "checkpoint_interval": 10,
-        "checkpoint_at_end": True,
-        "results_dir": args.results_dir,
-        "logging": args.logging,
-
+        # "max_seq_len": = 20,
     }
 
-    
-    # Preferrable to update the parameters in above dict before changing anything below
-    
-    run_configs = default_config
-    experiment_configs = {}
-    tune_configs = None
+    config = PPOConfig().training(
+        model=CUSTOM_MODEL,
+        lr=LR,
+        train_batch_size=train_batch_size,
+        lambda_=0.80,
+        vf_loss_coeff=0.5,
+        entropy_coeff=ENTROPY_COEFF,
+        clip_param=0.2,
+        vf_clip_param=VF_CLIP_PARAM,
+        sgd_minibatch_size=SGD_MINIBATCH_SIZE,
+        num_sgd_iter=NUM_SGD_ITER,
+        _enable_learner_api=False,
+    ).rollouts(
+        # batch_mode="complete_episodes",
+        num_rollout_workers=num_workers,
+        rollout_fragment_length=horizon,
+        num_envs_per_worker=NUM_ENVS_PER_WORKER,
+    ).multi_agent(
+        policies=policies,
+        policy_mapping_fn=(lambda aid, *args, **kwargs:
+                           choice(list(policies.keys())))
+    ).fault_tolerance(
+        recreate_failed_workers=True,
+        num_consecutive_worker_failures_tolerance=3,
+    ).environment(
+        env="meltingpot",
+        env_config=env_config,
+    ).debugging(
+        log_level=args.logging,
+        seed=args.seed,
+    ).resources(
+        num_gpus=args.num_gpus,
+        num_cpus_per_worker=1,
+        num_gpus_per_worker=0,
+        num_cpus_for_local_worker=1,
+        num_learner_workers=0,
+        # num_cpus_per_learner_worker: Optional[Union[float, int]] = NotProvided,
+        # num_gpus_per_learner_worker: Optional[Union[float, int]] = NotProvided,
+    ).framework(framework=args.framework,
+    ).reporting(metrics_num_episodes_for_smoothing=1,
+    ).evaluation(
+        evaluation_interval=None,  # don't evaluate unless we call evaluation()
+        # evaluation_config={
+        #     "explore": EXPLORE_EVAL,
+        #     "env_config": env_eval_config,
+        # },
+        # evaluation_duration=EVAL_DURATION,
+    ).experimental(
+        _disable_preprocessor_api=True
+    ).rl_module(
+        _enable_rl_module_api=False
+        )
 
-    # Resources 
-    run_configs.num_rollout_workers = params_dict['num_rollout_workers']
-    run_configs.num_gpus = params_dict['num_gpus']
 
+    ckpt_config = CheckpointConfig(num_to_keep=KEEP_CHECKPOINTS_NUM,
+                                   checkpoint_frequency=CHECKPOINT_FREQ,
+                                   checkpoint_at_end=True)
 
-    # Training
-    run_configs.train_batch_size = params_dict['train_batch_size']
-    run_configs.sgd_minibatch_size = params_dict['sgd_minibatch_size']
-    run_configs.preprocessor_pref = None
-    run_configs._disable_preprocessor_api = params_dict['disable_observation_precprocessing']
-    run_configs.rl_module(_enable_rl_module_api=params_dict['use_new_rl_modules'])
-    run_configs.training(_enable_learner_api=params_dict['use_new_learner_api'])
-    run_configs = run_configs.framework(params_dict['framework'])
-    run_configs.log_level = params_dict['logging']
-    run_configs.seed = params_dict['seed']
+    # Setup WanDB
+    if "WANDB_API_KEY" in os.environ and args.wandb:
+        wandb_project = f'{args.exp}_{args.framework}'
+        wandb_group = "meltingpot"
 
-    # Environment
-    run_configs.env = params_dict['env_name']
-    run_configs.env_config = params_dict['env_config']
-
-    # Setup multi-agent policies. The below code will initialize independent
-    # policies for each agent.
-    base_env = make_envs.env_creator(run_configs.env_config)
-    policies = {}
-    player_to_agent = {}
-    for i in range(len(player_roles)):
-        rgb_shape = base_env.observation_space[f"player_{i}"]["RGB"].shape
-        sprite_x = rgb_shape[0]
-        sprite_y = rgb_shape[1]
-
-        policies[f"agent_{i}"] = policy.PolicySpec(
-            observation_space=base_env.observation_space[f"player_{i}"],
-            action_space=base_env.action_space[f"player_{i}"],
-            config={
-                "model": {
-                    "conv_filters": [[16, [8, 8], 1],
-                                    [128, [sprite_x, sprite_y], 1]],
-                },
-            })
-        player_to_agent[f"player_{i}"] = f"agent_{i}"
-
-    run_configs.multi_agent(policies=policies, policy_mapping_fn=(lambda agent_id, *args, **kwargs: 
-                                                                  player_to_agent[agent_id]))
-    
-    run_configs.model["fcnet_hiddens"] = params_dict['fcnet_hidden']
-    run_configs.model["post_fcnet_hiddens"] = params_dict['post_fcnet_hidden']
-    run_configs.model["conv_activation"] = params_dict['cnn_activation'] 
-    run_configs.model["fcnet_activation"] = params_dict['fcnet_activation']
-    run_configs.model["post_fcnet_activation"] = params_dict['post_fcnet_activation']
-    run_configs.model["use_lstm"] = params_dict['use_lstm']
-    run_configs.model["lstm_use_prev_action"] = params_dict['lstm_use_prev_action']
-    run_configs.model["lstm_use_prev_reward"] = params_dict['lstm_use_prev_reward']
-    run_configs.model["lstm_cell_size"] = params_dict['lstm_cell_size']
-
-    # Experiment Trials
-    experiment_configs['name'] = params_dict['exp_name']
-    experiment_configs['stop'] = params_dict['stopping']
-    experiment_configs['keep'] = params_dict['num_checkpoints']
-    experiment_configs['freq'] = params_dict['checkpoint_interval']
-    experiment_configs['end'] = params_dict['checkpoint_at_end']
-    if args.framework == 'tf':
-        experiment_configs['dir'] = f"{params_dict['results_dir']}/tf"
+        # Set up Weights And Biases logging if API key is set in environment variable.
+        wdb_callbacks = [
+            WandbLoggerCallback(
+                project=wandb_project,
+                group=wandb_group,
+                api_key=os.environ["WANDB_API_KEY"],
+                log_config=True,
+            )
+        ]
     else:
-        experiment_configs['dir'] = f"{params_dict['results_dir']}/torch"
- 
-    return run_configs, experiment_configs, tune_configs
+        wdb_callbacks = []
+        print("WARNING! No wandb API key found, running without wandb!")
+
+    run_config = RunConfig(name=args.exp,
+                           callbacks=wdb_callbacks,
+                           local_dir=f"{args.results_dir}/{args.framework}",
+                           stop={"training_iteration": args.n_iterations},
+                           checkpoint_config=ckpt_config,
+                           verbose=VERBOSE)
+
+    tune_config = TuneConfig(reuse_actors=False)
+
+    return config, run_config, tune_config

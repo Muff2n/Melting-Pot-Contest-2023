@@ -1,49 +1,26 @@
 import argparse
-import os
 import ray
 
 
 from typing import *
-from ray import air
 from ray import tune
 from configs import get_experiment_config
-from ray.rllib.algorithms import ppo
 from ray.tune import registry
-from ray.air.integrations.wandb import WandbLoggerCallback
 from baselines.train import make_envs
 
+from baselines.train.callbacks import MyCallbacks
+
 def get_cli_args():
-  
+
   parser = argparse.ArgumentParser(description="Training Script for Multi-Agent RL in Meltingpot")
-  
+
+
   parser.add_argument(
-      "--num_workers",
-      type=int,
-      default=2,
-      help="Number of workers to use for sample collection. Setting it zero will use same worker for collection and model training.",
-  )
+      "--num_cpus", type=int, required=True, help="number of CPUs to use")
   parser.add_argument(
-      "--num_gpus",
-      type=int,
-      default=0,
-      help="Number of GPUs to run on (can be a fraction)",
-  )
+      "--num_gpus", type=int, required=True, help="number of GPUs to use")
   parser.add_argument(
-      "--local",
-      action="store_true",
-      help="If enabled, init ray in local mode.",
-  )
-  parser.add_argument(
-      "--no-tune",
-      action="store_true",
-      help="If enabled, no hyper-parameter tuning.",
-  )
-  parser.add_argument(
-        "--algo",
-        choices=["ppo"],
-        default="ppo",
-        help="Algorithm to train agents.",
-  )
+      "--n_iterations", type=int, required=True, help="number of training iterations to use")
   parser.add_argument(
         "--framework",
         choices=["tf", "torch"],
@@ -75,7 +52,7 @@ def get_cli_args():
         default="INFO",
         help="The level of training and data flow messages to print.",
   )
-  
+
   parser.add_argument(
         "--wandb",
         type=bool,
@@ -96,10 +73,15 @@ def get_cli_args():
         help="Whether this script should be run as a test.",
   )
 
+  parser.add_argument(
+      "--tmp_dir",
+      type=str,
+      default=None,
+      help="Custom tmp location for temporary ray logs")
+
   args = parser.parse_args()
   print("Running trails with the following arguments: ", args)
   return args
-
 
 
 if __name__ == "__main__":
@@ -107,73 +89,37 @@ if __name__ == "__main__":
   args = get_cli_args()
 
   # Set up Ray. Use local mode for debugging. Ignore reinit error.
-  ray.init(local_mode=args.local, ignore_reinit_error=True)
+  ray.init(
+    address="local",
+    num_cpus=args.num_cpus,
+    num_gpus=args.num_gpus,
+    ignore_reinit_error=True,
+    # logging_level=args.log,
+    _temp_dir=args.tmp_dir
+  )
 
   # Register meltingpot environment
   registry.register_env("meltingpot", make_envs.env_creator)
 
-  # Initialize default configurations for native RLlib algorithms
-  if args.algo == "ppo":
-     trainer = "PPO"
-     default_config = ppo.PPOConfig()
-  else:
-     print('The selected option is not tested. You may encounter issues if you use the baseline \
-           policy configurations with non-tested algorithms')
-
   # Fetch experiment configurations
-  configs, exp_config, tune_config = get_experiment_config(args, default_config)
-  
-  # Ensure GPU is available if set to True
-  if configs.num_gpus > 0:
-     import torch
-     if torch.cuda.is_available():
-        print("Using GPU device.")
-     else:
-        print("Either GPU is not available on this machine or not visible to this run. Training using CPU only.")
-        configs.num_gpus = 0
+  config, run_config, tune_config = get_experiment_config(args)
+  # print(config)
+  policies = config.multiagent.get("policies", {})
+  n = len(policies)
 
-
-  # Setup WanDB 
-  if "WANDB_API_KEY" in os.environ and args.wandb:
-    wandb_project = f'{args.exp}_{args.framework}'
-    wandb_group = "meltingpot"
-
-    # Set up Weights And Biases logging if API key is set in environment variable.
-    wdb_callbacks = [
-        WandbLoggerCallback(
-            project=wandb_project,
-            group=wandb_group,
-            api_key=os.environ["WANDB_API_KEY"],
-            log_config=True,
-        )
-    ]
-  else:
-    wdb_callbacks = []
-    print("WARNING! No wandb API key found, running without wandb!")
-
-
-  # Setup hyper-parameter optimization configs here
-  if not args.no_tune:
-    # NotImplementedError
-    tune_config = None
-  else:
-    tune_config = tune.TuneConfig(reuse_actors=False)
-
-
-  # Setup checkpointing configurations
-  ckpt_config = air.CheckpointConfig(num_to_keep=exp_config['keep'], checkpoint_frequency=exp_config['freq'], 
-                                     checkpoint_at_end=exp_config['end'])
+  # TODO: MyCallbacks are putting the reward as a list or scalar, and that is the opposite to what is required
+  # MyCallbacks.set_transfer_map({f"policy_{i}": 1 - i/5 for i in range(n)})
+  # config = config.callbacks(MyCallbacks)
 
   # Run Trials
   results = tune.Tuner(
-      trainer,
-      param_space=configs.to_dict(),
-      run_config=air.RunConfig(name = exp_config['name'], callbacks=wdb_callbacks, local_dir=exp_config['dir'], 
-                               stop=exp_config['stop'], checkpoint_config=ckpt_config, verbose=0),
+      "PPO",
+      param_space=config,
+      tune_config=tune_config,
+      run_config=run_config,
   ).fit()
 
   best_result = results.get_best_result(metric="episode_reward_mean", mode="max")
   print(best_result)
-  
-  ray.shutdown()
 
+  ray.shutdown()
