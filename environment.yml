@@ -1,0 +1,8 @@
+name: meltingpot
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10.8
+  - tensorflow>=2.11.1
+  - tensorflow-probability
+  - ray-rllib==2.6.3

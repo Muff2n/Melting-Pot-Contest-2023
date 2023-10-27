@@ -43,8 +43,8 @@ CHECKPOINT_FREQ = 20  # Default 0
 
 VERBOSE = 1
 
-SGD_MINIBATCH_SIZE = 2000  # 256 = minimum for efficient CPU training. increase if GPU
-LR = 1e-4  # 2e-4 for 4096
+SGD_MINIBATCH_SIZE = 4096  # 256 = minimum for efficient CPU training. increase if GPU
+LR = 2e-4  # 2e-4 for 4096
 VF_CLIP_PARAM = 2.0
 NUM_SGD_ITER = 10
 ENTROPY_COEFF = 0.003
