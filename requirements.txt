@@ -1,0 +1,27 @@
+absl-py
+chex<0.1.81  # Incompatible with tensorflow 2.13 (due to numpy req).
+dm-env
+dmlab2d
+dm-tree
+immutabledict
+ml-collections
+networkx
+numpy==1.24.3
+opencv-python
+pandas
+pygame
+reactivex
+tensorflow==2.11.1
+# tensorflow-cpu==2.11.1
+tensorflow-probability
+ray[all]==2.6.3
+gymnasium
+matplotlib
+pydantic==1.10.12
+wandb
+
+# my stuff
+ipython
+pandas
+random
+typing-extensions
