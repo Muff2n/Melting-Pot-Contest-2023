@@ -43,7 +43,7 @@ CHECKPOINT_FREQ = 20  # Default 0
 
 VERBOSE = 1
 
-SGD_MINIBATCH_SIZE = 4096  # 256 = minimum for efficient CPU training. increase if GPU
+SGD_MINIBATCH_SIZE = 4000  # 256 = minimum for efficient CPU training. increase if GPU
 LR = 2e-4  # 2e-4 for 4096
 VF_CLIP_PARAM = 2.0
 NUM_SGD_ITER = 10
@@ -58,7 +58,7 @@ def get_experiment_config(args):
         horizon = 2000
     elif args.exp == 'clean_up':
         substrate_name = "clean_up"
-        horizon = 1000 + 2/3 * (100 / 0.2)
+        horizon = 1000 + (100 / 0.2)
     elif args.exp == 'territory_rooms':
         substrate_name = "territory__rooms"
     else:
@@ -129,7 +129,7 @@ def get_experiment_config(args):
     ).rollouts(
         # batch_mode="complete_episodes",
         num_rollout_workers=num_workers,
-        rollout_fragment_length=horizon,
+        rollout_fragment_length=100,  # or horizon
         num_envs_per_worker=NUM_ENVS_PER_WORKER,
     ).multi_agent(
         policies=policies,

@@ -14,7 +14,7 @@ reactivex
 # tensorflow==2.11.1
 # tensorflow-cpu==2.11.1
 # tensorflow-probability
-ray[defaults,rllib]==2.6.3
+ray[rllib]==2.6.3
 gymnasium
 matplotlib
 pydantic==1.10.12
