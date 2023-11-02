@@ -56,12 +56,15 @@ def get_experiment_config(args):
         substrate_name = "allelopathic_harvest__open"
         horizon = 2000
         player_roles = substrate.get_config(substrate_name).default_player_roles
+        num_players = len(player_roles)
+        unique_roles = list(set(player_roles))
+
 
         def policy_mapping_fn(aid, *args, **kwargs):
           if aid in [f"player_{i}" for i in range(8)]:
-              return player_roles[0]
+              return unique_roles[0]
           elif aid in [f"player_{i}" for i in range(8, 16)]:
-              return player_roles[1]
+              return unique_roles[1]
           assert False
     elif args.exp == 'clean_up':
         substrate_name = "clean_up"
@@ -75,7 +78,7 @@ def get_experiment_config(args):
     num_workers = args.num_cpus - 1
 
     train_batch_size = max(
-      1, num_workers) * NUM_ENVS_PER_WORKER * NUM_EPISODES_PER_WORKER * horizon * len(player_roles)
+      1, num_workers) * NUM_ENVS_PER_WORKER * NUM_EPISODES_PER_WORKER * horizon * num_players
 
     if args.downsample:
         scale_factor = 8
@@ -93,7 +96,7 @@ def get_experiment_config(args):
 
     # Each player needs to have the same
     policies = {}
-    for role in player_roles:
+    for role in unique_roles:
         policies[role] = policy.PolicySpec(
             # policy_class=None,  # use default policy
             observation_space=base_env.observation_space[f"player_0"],
