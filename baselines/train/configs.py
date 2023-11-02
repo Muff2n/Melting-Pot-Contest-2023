@@ -34,16 +34,15 @@ SUPPORTED_SCENARIOS = [
 
 IGNORE_KEYS = ['WORLD.RGB', 'INTERACTION_INVENTORIES', 'NUM_OTHERS_WHO_CLEANED_THIS_STEP']
 
-NUM_POLICIES = 1
 NUM_ENVS_PER_WORKER = 1
 NUM_EPISODES_PER_WORKER = 1
 
 KEEP_CHECKPOINTS_NUM = 1  # Default None
-CHECKPOINT_FREQ = 20  # Default 0
+CHECKPOINT_FREQ = 10  # Default 0
 
 VERBOSE = 1
 
-SGD_MINIBATCH_SIZE = 4000  # 256 = minimum for efficient CPU training. increase if GPU
+SGD_MINIBATCH_SIZE = 4000
 LR = 2e-4  # 2e-4 for 4096
 VF_CLIP_PARAM = 2.0
 NUM_SGD_ITER = 10
@@ -56,6 +55,14 @@ def get_experiment_config(args):
     elif args.exp == 'al_harvest':
         substrate_name = "allelopathic_harvest__open"
         horizon = 2000
+        player_roles = substrate.get_config(substrate_name).default_player_roles
+
+        def policy_mapping_fn(aid, *args, **kwargs):
+          if aid in [f"player_{i}" for i in range(8)]:
+              return player_roles[0]
+          elif aid in [f"player_{i}" for i in range(8, 16)]:
+              return player_roles[1]
+          assert False
     elif args.exp == 'clean_up':
         substrate_name = "clean_up"
         horizon = 1000 + (100 / 0.2)
@@ -66,9 +73,6 @@ def get_experiment_config(args):
                         'territory_rooms']. Other substrates are not supported.")
 
     num_workers = args.num_cpus - 1
-
-    # Fetch player roles
-    player_roles = substrate.get_config(substrate_name).default_player_roles
 
     train_batch_size = max(
       1, num_workers) * NUM_ENVS_PER_WORKER * NUM_EPISODES_PER_WORKER * horizon * len(player_roles)
@@ -89,10 +93,8 @@ def get_experiment_config(args):
 
     # Each player needs to have the same
     policies = {}
-    for i in range(NUM_POLICIES):
-        assert base_env.observation_space[f"player_0"] == base_env.observation_space[f"player_{i}"]
-        assert base_env.action_space[f"player_0"] == base_env.action_space[f"player_{i}"]
-        policies[f"policy_{i}"] = policy.PolicySpec(
+    for role in player_roles:
+        policies[role] = policy.PolicySpec(
             # policy_class=None,  # use default policy
             observation_space=base_env.observation_space[f"player_0"],
             action_space=base_env.action_space[f"player_0"])
@@ -133,8 +135,7 @@ def get_experiment_config(args):
         num_envs_per_worker=NUM_ENVS_PER_WORKER,
     ).multi_agent(
         policies=policies,
-        policy_mapping_fn=(lambda aid, *args, **kwargs:
-                           choice(list(policies.keys())))
+        policy_mapping_fn=policy_mapping_fn,
     ).fault_tolerance(
         recreate_failed_workers=True,
         num_consecutive_worker_failures_tolerance=3,
