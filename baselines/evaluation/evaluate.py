@@ -58,12 +58,25 @@ def run_evaluation(args):
     video_dir = None
 
   policies_path = args.policies_dir
+
   roles = configs['env_config']['roles']
-  # policy_ids = [f"agent_{i}" for i in range(len(roles))]
-  policy_ids = ["policy_0" for i in range(len(roles))]
+  player_ids = [f"player_{i}" for i in range(len(roles))]
+  unique_roles = list(set(roles))
+
+  def policy_mapping_fn(aid, *args, **kwargs):
+    if aid in [f"player_{i}" for i in range(8)]:
+        return unique_roles[0]
+    elif aid in [f"player_{i}" for i in range(8, 16)]:
+        return unique_roles[1]
+    assert False
+
+  policy_ids = [policy_mapping_fn(pid) for pid in player_ids]
+
   names_by_role = defaultdict(list)
-  for i in range(len(policy_ids)):
-    names_by_role[roles[i]].append(policy_ids[i])
+  # for pid in player_ids:
+  #   names_by_role[policy_mapping_fn(pid)].append(pid)
+  for role in unique_roles:
+    names_by_role[role].append(role)
 
   # Build population and evaluate
   with build_focal_population(policies_path, policy_ids, scaled) as population:

@@ -59,13 +59,13 @@ def get_experiment_config(args):
         num_players = len(player_roles)
         unique_roles = list(set(player_roles))
 
-
         def policy_mapping_fn(aid, *args, **kwargs):
           if aid in [f"player_{i}" for i in range(8)]:
               return unique_roles[0]
           elif aid in [f"player_{i}" for i in range(8, 16)]:
               return unique_roles[1]
           assert False
+
     elif args.exp == 'clean_up':
         substrate_name = "clean_up"
         horizon = 1000 + (100 / 0.2)
